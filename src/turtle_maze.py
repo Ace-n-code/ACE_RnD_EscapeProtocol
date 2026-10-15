@@ -4,12 +4,23 @@ import time
 import json
 import math
 import tkinter.messagebox as msg
+import tkinter.simpledialog as simpledialog
 
-filename = r"src/mazes/maze1.json"
+PLAYER_USERNAME = ""
+# ------------------ CONFIG ------------------
+maze_files = [
+    r"ACE_RnD_EscapeProtocol-main/src/mazes/Polygon.json",
+]
+current_maze_index = 0
+scores = {}
+timer_running = False
+start_time = 0
+
+# --------------------------------------------
 
 # --- Main Tkinter window ---
 root = tk.Tk()
-root.title("Maze Solver with Block Commands")
+root.title("Escape Protocol")
 
 # Layout: left side controls, right side turtle canvas
 frame_left = tk.Frame(root)
@@ -19,7 +30,21 @@ frame_right = tk.Frame(root)
 frame_right.pack(side="right", padx=10, pady=10)
 
 # --- Turtle Canvas inside Tkinter ---
-canvas = turtle.ScrolledCanvas(frame_right, width=600, height=600)
+border_frame = tk.Frame(frame_right, bd=0, relief="flat", highlightthickness=5, highlightbackground="white")
+border_frame.pack(padx=0, pady=0)
+
+maze_label = tk.Label(
+    border_frame,
+    text="",
+    font=("Arial", 16, "bold"),
+    bg="White",
+    fg="Black",
+    pady=6
+)
+maze_label.pack(fill="x")
+
+canvas = turtle.ScrolledCanvas(border_frame, width=600, height=600)
+canvas.config(highlightthickness=0, bd=0, relief="flat")
 canvas.pack()
 screen = turtle.TurtleScreen(canvas)
 screen.tracer(0)   # manual updates
@@ -29,105 +54,143 @@ maze = turtle.RawTurtle(screen)
 maze.speed(0)
 maze.hideturtle()
 
-# Walls list
-walls = []
-
-def draw_wall(x1, y1, x2, y2):
-    maze.penup()
-    maze.goto(x1, y1)
-    maze.pendown()
-    maze.goto(x2, y2)
-    # walls.append((x1, y1, x2, y2))
-
-# --- Draw Maze ---
-def build_maze():
-    walls.clear()
-    maze.clear()
-    # Border
-    with open(filename, "r") as f:
-        data = json.load(f)
-    return data["walls"], tuple(data["start"]), tuple(data["goal"])
-
-walls, start_pos, goal_pos = build_maze()
-
-for wall in walls:
-    draw_wall(wall[0],wall[1],wall[2],wall[3])
-
-
-goal_marker = turtle.RawTurtle(screen)
-goal_marker.shape("circle")
-goal_marker.color("green")
-goal_marker.penup()
-goal_marker.goto(goal_pos)
-goal_marker.stamp()   # draw goal once
-
-# --- Player Turtle ---
+# Player turtle
 player = turtle.RawTurtle(screen)
 player.shape("turtle")
 player.color("blue")
 player.penup()
-player.goto(start_pos)
 
-# Show everything initially
-screen.update()
+# Goal marker
+goal_marker = turtle.RawTurtle(screen)
+goal_marker.shape("circle")
+goal_marker.color("green")
+goal_marker.penup()
+
+# Globals
+walls = []
+start_pos = (0, 0)
+goal_pos = (0, 0)
+maze_name = ""
+
+total_moves_all = 0
+total_distance_all = 0.0
+total_score_all = 0.0
+
+def get_username():
+    global PLAYER_USERNAME
+    
+    # Check if a username has been set, otherwise prompt the user
+    if not PLAYER_USERNAME:
+        username = simpledialog.askstring("Username", "Enter your unique competition username:")
+        if username:
+            PLAYER_USERNAME = username.strip()
+            # Update the UI element to show the player who they are
+            status_label.config(text=f"Welcome, {PLAYER_USERNAME}!\nStatus: Ready")
+        else:
+            # Handle cancel or no input
+            PLAYER_USERNAME = "Anonymous"
+            status_label.config(text="Status: Ready (Anonymous Player)")
+
+# --- Border Color SET ---
+def set_border_color(color):
+    border_frame.config(highlightbackground=color)
+    border_frame.update()
+
+# --- Maze Loader ---
+def build_maze(filename):
+    global walls, start_pos, goal_pos, maze_name
+    maze.clear()
+    walls.clear()
+    with open(filename, "r") as f:
+        data = json.load(f)
+    walls = data["walls"]
+    start_pos = tuple(data["start"])
+    goal_pos = tuple(data["goal"])
+    maze_name = data["name"]
+    maze_label.config(text=maze_name)
+    for wall in walls:
+        x1, y1, x2, y2 = wall
+        maze.penup()
+        maze.goto(x1, y1)
+        maze.pendown()
+        maze.goto(x2, y2)
+    player.clear()
+    player.penup()
+    player.goto(start_pos)
+    player.setheading(0)
+    goal_marker.clearstamps()
+    goal_marker.goto(goal_pos)
+    goal_marker.stamp()
+    screen.update()
+
+
+# --- Maze Progression ---
+def load_next_maze():
+    global current_maze_index, timer_running
+    set_border_color("white")
+    timer_running = False
+    current_maze_index += 1
+    if current_maze_index < len(maze_files):
+        text_box.delete("1.0", tk.END)
+        build_maze(maze_files[current_maze_index])
+        status_label.config(text=f"Next Maze Loaded! 🧩 Maze {current_maze_index + 1}")
+        start_timer()  # start fresh timer for new maze
+    else:   
+        show_final_scores()
+
+
+def show_final_scores():
+    timer_running = False
+    summary = "🏁 All Mazes Completed!\n\nYour Scores:\n"
+    for maze_name, score in scores.items():
+        summary += f"• {maze_name}: {score:.2f}\n"
+    summary += f"\nTotal Score: {total_score_all:.2f}\n\n🎯 Well done!"
+    msg.showinfo("Results", summary)
+
 
 # --- Collision Detection ---
 def is_collision(x, y):
-    """
-    Checks for collision against any wall (horizontal, vertical, or slant) 
-    by calculating the distance from the player point (x, y) to the wall segment.
-    """
-    # Player radius or collision buffer
-    THRESHOLD = 5 
-
+    THRESHOLD = 5
     for x1, y1, x2, y2 in walls:
         dx = x2 - x1
         dy = y2 - y1
-        len_sq = dx*dx + dy*dy
-
-        # If the segment is a point (shouldn't happen), check point distance
+        len_sq = dx * dx + dy * dy
         if len_sq == 0:
             if math.hypot(x - x1, y - y1) < THRESHOLD:
                 return True
             continue
-
-        # Calculate t: The projection factor of vector AP onto vector AB
-        # P = (x, y), A = (x1, y1), B = (x2, y2)
-        # t = ((P - A) . (B - A)) / |B - A|^2
         t = ((x - x1) * dx + (y - y1) * dy) / len_sq
-
-        # Clamp t to the [0, 1] range to ensure the closest point is on the segment
         t = max(0, min(1, t))
-
-        # Closest point on the segment (closest_x, closest_y)
         closest_x = x1 + t * dx
         closest_y = y1 + t * dy
-
-        # Calculate distance from player (x, y) to the closest point on the wall
         distance = math.hypot(x - closest_x, y - closest_y)
-
         if distance < THRESHOLD:
             return True
-            
     return False
 
-# --- Tkinter Controls ---
-label = tk.Label(frame_left, text="Enter commands:")
-label.pack()
 
-text_box = tk.Text(frame_left, height=15, width=25)
-text_box.pack()
+# --- Timer ---
+def start_timer():
+    global start_time, timer_running
+    start_time = time.time()
+    timer_running = True
+    update_timer()
 
-status_label = tk.Label(frame_left, text="Status: Ready")
-status_label.pack()
 
-# --- Scoring variables ---
-move_count = 0
-total_distance = 0.0
-start_time = time.time()
+def update_timer():
+    if timer_running:
+        elapsed = time.time() - start_time
+        timer_label.config(text=f"⏱ Time: {int(elapsed)}s")
+        root.after(1000, update_timer)
 
+
+# --- Command Execution ---
 def run_commands():
-    # Reset player to start each run
+    global start_time, timer_running, total_time_all, total_moves_all, total_distance_all, total_score_all, maze_name
+    move_count = 0
+    total_distance = 0
+
+    set_border_color("white")
     player.clear()
     player.penup()
     player.goto(start_pos)
@@ -136,9 +199,6 @@ def run_commands():
     screen.update()
 
     commands = text_box.get("1.0", tk.END).strip().splitlines()
-
-    move_count = 0
-    total_distance = 0
 
     for cmd in commands:
         parts = cmd.strip().split()
@@ -149,84 +209,113 @@ def run_commands():
         if action == "MOVE" and len(parts) == 2:
             try:
                 dist = int(parts[1])
-                total_distance += dist
+                total_distance += abs(dist)
                 step = 5
                 for _ in range(abs(dist)//step):
                     player.forward(step if dist > 0 else -step)
                     screen.update()
-                    time.sleep(0.02)   # <- add delay for smooth motion
+                    time.sleep(0.02)
                     if is_collision(player.xcor(), player.ycor()):
                         player.backward(step)
-                        status_label.config(text="💥 Hit a wall!")
+                        status_label.config(text="💥 Hit a wall! Try again.")
+                        set_border_color("red")
                         return
-                    if player.distance(goal_pos) < 15:
-                        end_time = time.time()
-                        elapsed = end_time - start_time
-                        score = (elapsed * 0.5) + (move_count * 2) + (total_distance * 0.1)
-                        status_label.config(text=f"🎉 Goal Reached! ,\n \
-                                             ⏱ Time: {elapsed:.2f}s\n🚶 Moves: {move_count}\n📏 Distance: {int(total_distance)}\n🏆 Score: {score:.2f}")
+                    if player.distance(goal_pos) < 20:
+                        elapsed = time.time() - start_time
+                        score = max(100, 1000 - (elapsed * 0.8 + move_count * 3 + total_distance * 0.2))
+                        scores[f"{maze_name}"] = score
+                        print(scores)
+                        set_border_color("green")
+                        timer_running = False
+                        total_moves_all += move_count
+                        total_distance_all += total_distance
+                        total_score_all += score
+                        status_label.config(
+                            text=f"{maze_name} Complete!\n"
+                        )
+                        score_label.config(
+                            text=f"⏱ Prev. Maze Time: {elapsed:.2f}s\n🚶 Moves: {total_moves_all}\n📏 Distance: {int(total_distance_all)}\n🏆 Score: {total_score_all:.2f}"
+                        )
+                        screen.update()
+                        if PLAYER_USERNAME == "" or PLAYER_USERNAME == "Anonymous":
+                            print("Score not submitted: Anonymous player.")
+                            pass 
+                        else:
+                            status_label.config(
+                                text=f"{maze_name} Complete! Uploading score\n"
+                            )
+                            screen.update()
+                            status_label.config(
+                                text=f"{maze_name} Complete! Uploaded\n"
+                            )
+                        if current_maze_index == len(maze_files) - 1:
+                            # final maze — show final scores after a short pause so user can read
+                            root.after(1500, show_final_scores)
+                        else:
+                            # not last one — go to next maze after a short pause
+                            root.after(2000, load_next_maze)
                         return
             except:
                 pass
-        elif action == "ROTATE" and len(parts) == 2:
+        elif action == "TURN" and len(parts) == 2:
             try:
                 angle = int(parts[1])
                 player.right(angle)
                 screen.update()
-                time.sleep(0.1)  # small delay so rotation is visible
+                time.sleep(0.1)
             except:
                 pass
     status_label.config(text="✅ Finished commands")
 
-run_button = tk.Button(frame_left, text="Run", command=run_commands)
+
+# --- UI ELEMENTS ---
+timer_label = tk.Label(frame_left, text="⏱ Time: 0.0s", font=("Consolas", 11, "bold"))
+timer_label.pack(pady=5)
+root.bind('<Control-Return>', lambda event: run_commands())
+
+score_label = tk.Label(frame_left, text="🏆 Score: —", font=("Consolas", 11, "bold"))
+score_label.pack(pady=5)
+
+label = tk.Label(frame_left, text="Enter commands:")
+label.pack()
+
+text_box = tk.Text(frame_left, height=15, width=25)
+text_box.pack()
+
+run_button = tk.Button(frame_left, text="▶ Run", command=run_commands)
 run_button.pack(pady=5)
 
-def show_mouse_position(event):
-    canvas_width = screen.window_width()
-    canvas_height = screen.window_height()
+status_label = tk.Label(frame_left, text="Status: Ready", justify="left", wraplength=250)
+status_label.pack()
 
-    # Convert tkinter canvas coords (top-left origin)
-    # to turtle coords (center origin, y increasing upward)
-    x = event.x - canvas_width / 2
-    y = canvas_height / 2 - event.y
-
-    coord_label.config(text=f"🖱️ Mouse: ({int(x)}, {int(y)})")
-
-
-coord_label = tk.Label(frame_left, text="🖱️ Mouse: (0, 0)")
-coord_label.pack(pady=5)
-
-canvas.bind("<Motion>", show_mouse_position)
-
-#INSTRUCTION PANEL
+# --- INSTRUCTION PANEL ---
 def show_instructions():
     instructions = """
-📘 **MAZE SOLVER INSTRUCTIONS**
+📘 **INSTRUCTIONS**
 
 Welcome to the Maze Solver challenge! 🧩  
-Your goal is to **navigate the blue turtle 🐢** from the **start point** to the **green goal 🟢**
+Your goal is to navigate the blue turtle 🐢from the start point to the green goal 🟢
 using text-based movement commands — without hitting any walls.
 
 ───────────────────────────────
 🧭 **COMMANDS**
 ───────────────────────────────
-➡️  MOVE <distance>  
-  Moves the turtle forward by the given number of pixels.
+➡️ MOVE <distance>  
+- Moves the turtle forward by the given number of pixels.
 
-↩️  ROTATE <angle>  
-  Rotates the turtle clockwise by the given number of degrees.
+↩️ TURN <angle>  
+- Rotates the turtle clockwise by the given number of degrees.
+- Rotates Anti Clockwise by using negative number of degrees.
 
 ───────────────────────────────
 💻 **EXAMPLES**
 ───────────────────────────────
-MOVE 100  
-ROTATE 90  
-MOVE 50  
-ROTATE 45  
-MOVE 70  
-
-Tip 🪄:  
-You can use multiple lines — one command per line!
+TURN 120
+MOVE 220
+TURN -120
+MOVE 240
+TURN 55
+MOVE 70 
 
 ───────────────────────────────
 🎯 **GOAL**
@@ -254,10 +343,9 @@ Higher scores = better performance!
 
 Good luck, maze solver! 🎉
 """
-    # Use a Toplevel window for better formatting than simple messagebox
     help_window = tk.Toplevel()
-    help_window.title("📘 Maze Solver Instructions")
-    help_window.geometry("500x600")
+    help_window.title("📘 Instructions")
+    help_window.geometry("450x500")
     help_window.resizable(False, True)
 
     text_widget = tk.Text(help_window, wrap="word", font=("Consolas", 11), bg="#f8f9fa")
@@ -269,7 +357,14 @@ Good luck, maze solver! 🎉
     scrollbar.pack(side="right", fill="y")
     text_widget.config(yscrollcommand=scrollbar.set)
 
+
 help_button = tk.Button(frame_left, text="❓ Help / Instructions", command=show_instructions)
 help_button.pack(pady=5)
+
+get_username()
+
+# Build first maze and start timer
+build_maze(maze_files[current_maze_index])
+start_timer()
 
 root.mainloop()
