@@ -1,0 +1,12 @@
+{
+  "name": "MAZE_NOT_FOUND",
+  "walls": [],
+  "start": [
+    -254,
+    242
+  ],
+  "goal": [
+    -20,
+    -139
+  ]
+}
